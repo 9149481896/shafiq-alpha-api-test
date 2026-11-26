@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import requests, gzip, io, time, base64, html
+import requests, gzip, io, time, base64, html, json
 from urllib.parse import quote
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
@@ -330,12 +330,52 @@ def apply_filters(d,conditions,logic):
         try: v=float(c["value"])
         except: continue
         op=c["operation"]
-        m={">":s>v,">=":s>=v,"<":s<v,"<=":s<=v,"=":s==v}.get(op)
+        m={">":s>v,">=":s>=v,"<":s<v,"<=":s<=v,"=":s==v,"!=":(s!=v)&s.notna()}.get(op)
         if m is not None: masks.append(m.fillna(False))
     if not masks: return d
     result=masks[0]
     for m in masks[1:]: result=(result&m) if logic=="AND" else (result|m)
     return d[result]
+
+# ---------- Scanner / Screener data ----------
+SCREEN_COLUMNS=["Symbol","Company","Exchange","Security Type","LTP","Change %","Net Change","Volume",
+    "Est. Traded Value (Cr)","Open","High","Low","Close","Average Price","Buy Quantity","Sell Quantity",
+    "ISIN","Quote Time"]
+TEXT_COLUMNS=["Symbol","Company","Exchange","Security Type","ISIN","Quote Time"]
+OPERATORS=[">",">=","<","<=","=","!="]
+
+def screener_view(d):
+    d=with_change_pct(d)
+    prefix=d["ISIN"].astype(str).str.upper().str[:3]
+    d["Security Type"]=np.select([prefix=="INE",prefix=="INF"],["Company Share","ETF / Fund"],default="Other")
+    avg=pd.to_numeric(d.get("Average Price"),errors="coerce")
+    d["Est. Traded Value (Cr)"]=avg*pd.to_numeric(d["Volume"],errors="coerce")/1e7
+    # Keep only useful columns, and hide any column that has no data at all
+    out=d[[c for c in SCREEN_COLUMNS if c in d.columns]]
+    return out.dropna(axis=1,how="all")
+
+def type_filter(d,key):
+    choice=st.selectbox("Security Type",["Company Share","ETF / Fund","Other","ALL"],key=key)
+    return d if choice=="ALL" else d[d["Security Type"]==choice]
+
+def show_table(d):
+    formats={c:st.column_config.NumberColumn(format="%.2f") for c in
+        ["LTP","Change %","Net Change","Est. Traded Value (Cr)","Open","High","Low","Close","Average Price"] if c in d}
+    st.dataframe(d,use_container_width=True,hide_index=True,column_config=formats)
+
+def new_condition(field="Volume",operation=">",value=100000.0):
+    st.session_state["condition_counter"]=st.session_state.get("condition_counter",0)+1
+    return {"id":st.session_state["condition_counter"],"field":field,"operation":operation,"value":float(value)}
+
+def read_filter_file(raw,fields):
+    saved=json.loads(raw.decode("utf-8"))
+    logic=saved["logic"] if saved.get("logic") in ["AND","OR"] else "AND"
+    conditions=[]
+    for c in saved["conditions"]:
+        if c["field"] not in fields or c["operation"] not in OPERATORS:
+            raise ValueError(f'یہ شرط دستیاب نہیں: {c["field"]} {c["operation"]}')
+        conditions.append(new_condition(c["field"],c["operation"],c["value"]))
+    return logic,conditions
 
 # ---------- Dashboard components ----------
 def nifty_panel_html(nq, candles):
@@ -499,11 +539,11 @@ elif page=="Market Scanner":
         lo=y.number_input("Minimum Price",min_value=0.0,value=0.0)
         hi=z.number_input("Maximum Price",min_value=0.0,value=100000.0)
         mv=st.number_input("Minimum Daily Volume",min_value=0,value=0)
-        out=scanner.copy()
+        out=type_filter(screener_view(scanner),"scanner_type")
         if ex!="ALL": out=out[out.Exchange==ex]
         out=out[pd.to_numeric(out.LTP,errors="coerce").between(lo,hi)&(pd.to_numeric(out.Volume,errors="coerce")>=mv)]
         st.metric("Matching Stocks",f"{len(out):,}")
-        st.dataframe(out,use_container_width=True,hide_index=True)
+        show_table(out)
         st.download_button("⬇️ Export Scanner CSV",out.to_csv(index=False).encode(),"shafiq_alpha_scanner.csv","text/csv")
 
 elif page=="Company Search":
@@ -563,25 +603,57 @@ elif page=="Custom Screener":
     st.markdown('<div class="sa-title">⚙️ SHAFIQ ALPHA CUSTOM SCREENER</div>',unsafe_allow_html=True)
     if scanner is None or scanner.empty: st.warning("پہلے Live Market Data Refresh کریں۔")
     else:
-        fields=[f for f in ["LTP","Volume","Net Change","Market Cap (Cr)"] if f in scanner]
+        data=screener_view(scanner)
+        fields=[f for f in data.columns if f not in TEXT_COLUMNS]
+        data=type_filter(data,"screener_type")
+        exchange=st.selectbox("Exchange",["ALL"]+sorted(scanner["Exchange"].dropna().unique().tolist()),key="screener_exchange")
+        if exchange!="ALL": data=data[data["Exchange"]==exchange]
+        st.caption("Market Cap، RSI اور Fundamentals کے فلٹر ابھی شامل نہیں ہیں۔")
+
+        with st.expander("📂 محفوظ فلٹر کھولیں"):
+            uploaded=st.file_uploader("فلٹر فائل (.json)",type=["json"],key="filter_upload")
+            if uploaded is not None and st.button("Load Filter",key="load_filter"):
+                try:
+                    logic_loaded,loaded=read_filter_file(uploaded.getvalue(),fields)
+                    st.session_state.custom_conditions=loaded
+                    st.session_state["screener_logic"]=logic_loaded
+                    st.session_state.last_custom_result=None
+                    st.success("فلٹر لوڈ ہو گیا۔")
+                except Exception as e: st.error(f"فلٹر فائل نہیں کھلی: {e}")
+
         st.info("AND میں تمام شرائط پوری ہوں؛ OR میں کم از کم ایک شرط پوری ہو۔")
-        logic=st.radio("Filter Logic",["AND","OR"],horizontal=True)
-        if not st.session_state.custom_conditions: st.session_state.custom_conditions=[{"field":"Volume","operation":">","value":100000}]
-        if st.button("➕ Add Condition"): st.session_state.custom_conditions.append({"field":fields[0],"operation":">","value":0})
-        for i,c in enumerate(st.session_state.custom_conditions):
+        logic=st.radio("Filter Logic",["AND","OR"],horizontal=True,key="screener_logic")
+        conditions=st.session_state.custom_conditions
+        if not conditions: conditions.append(new_condition())
+        if st.button("➕ Add Condition"): conditions.append(new_condition(fields[0],">",0))
+        for n,c in enumerate(list(conditions),1):
+            if "id" not in c: c.update(new_condition(c["field"],c["operation"],c["value"]))
+            k=c["id"]
             a,b,cc,dd=st.columns([2,1,2,1])
-            c["field"]=a.selectbox(f"Field {i+1}",fields,index=fields.index(c["field"]) if c["field"] in fields else 0,key=f"f{i}")
-            c["operation"]=b.selectbox("Operator",[">",">=","<","<=","="],key=f"o{i}")
-            c["value"]=cc.number_input("Value",value=float(c["value"]),key=f"v{i}")
-            if dd.button("Remove",key=f"r{i}"):
-                st.session_state.custom_conditions.pop(i); st.rerun()
+            c["field"]=a.selectbox(f"Field {n}",fields,index=fields.index(c["field"]) if c["field"] in fields else 0,key=f"f{k}")
+            c["operation"]=b.selectbox("Operator",OPERATORS,index=OPERATORS.index(c["operation"]),key=f"o{k}")
+            c["value"]=cc.number_input("Value",value=float(c["value"]),key=f"v{k}")
+            if dd.button("Remove",key=f"r{k}"):
+                st.session_state.custom_conditions=[x for x in conditions if x.get("id")!=k]
+                st.session_state.last_custom_result=None
+                st.rerun()
+
+        saved={"logic":logic,"conditions":[{x:c[x] for x in ["field","operation","value"]} for c in conditions]}
+        st.download_button("💾 یہ فلٹر محفوظ کریں",json.dumps(saved,indent=2).encode(),"shafiq_alpha_filter.json","application/json")
+
+        # Results always follow the conditions and selections currently on screen
+        signature=json.dumps([saved,exchange,st.session_state.get("screener_type"),st.session_state.last_refresh])
         if st.button("🚀 Run Custom Screener"):
-            st.session_state.last_custom_result=apply_filters(scanner,st.session_state.custom_conditions,logic)
+            st.session_state.last_custom_result=apply_filters(data,conditions,logic)
+            st.session_state["result_signature"]=signature
         result=st.session_state.last_custom_result
         if isinstance(result,pd.DataFrame):
-            st.success(f"{len(result):,} stocks matched.")
-            st.dataframe(result,use_container_width=True,hide_index=True)
-            st.download_button("⬇️ Export Custom Screener",result.to_csv(index=False).encode(),"shafiq_alpha_custom_screener.csv","text/csv")
+            if st.session_state.get("result_signature")!=signature:
+                st.warning("شرائط بدل گئی ہیں۔ دوبارہ Run Custom Screener دبائیں۔")
+            else:
+                st.success(f"{len(result):,} of {len(data):,} listings matched.")
+                show_table(result)
+                st.download_button("⬇️ Export Custom Screener",result.to_csv(index=False).encode(),"shafiq_alpha_custom_screener.csv","text/csv")
 
 st.divider()
 st.markdown("""<div style="text-align:center;color:#9eb5d1;padding:12px">
