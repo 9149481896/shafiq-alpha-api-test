@@ -15,7 +15,7 @@ st.set_page_config(
     page_title="SHAFIQ ALPHA | Stock Market Intelligence",
     page_icon="📈",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 BASE = "https://api.upstox.com"
@@ -47,10 +47,10 @@ h1,h2,h3{color:#f4d477!important}
 .sa-hero:after{content:"";position:absolute;left:-5%;right:-5%;bottom:4px;height:8px;
  background:linear-gradient(90deg,#06b8ff,#f4b928,#fff0a3,#f2a900,#08b9ff);
  transform:rotate(-1.2deg);filter:drop-shadow(0 0 8px #e8b82c)}
-.sa-avatar{width:190px;height:190px;flex:0 0 190px;padding:5px;border-radius:50%;
+.sa-avatar{width:220px;height:220px;flex:0 0 220px;padding:5px;border-radius:50%;
  background:linear-gradient(135deg,#fff4ae,#e8a91d,#fff2a3);
  box-shadow:0 0 0 5px rgba(242,190,54,.16),0 0 32px rgba(255,192,45,.42)}
-.sa-avatar img{width:100%;height:100%;object-fit:cover;object-position:center 22%;
+.sa-avatar img{width:100%;height:100%;object-fit:cover;object-position:center 18%;transform:scale(1.12);
  border-radius:50%;border:3px solid #061326}
 .sa-brand-title{font-size:clamp(2.4rem,5vw,4.4rem);font-weight:900;line-height:1.03;
  letter-spacing:.025em;background:linear-gradient(100deg,#ffbd25,#fff1b4 32%,#dceeff 53%,#13c9ff 78%,#71f5ce);
@@ -74,16 +74,16 @@ div[data-testid="stMetric"] label{color:#d9eaff!important;font-weight:700}
 div[data-testid="stMetric"] [data-testid="stMetricValue"]{color:#fff!important;font-weight:900}
 [data-testid="stDataFrame"],[data-testid="stTable"]{border:1px solid rgba(43,150,230,.75);border-radius:12px;overflow:hidden}
 [data-testid="stTextInput"] input,[data-testid="stNumberInput"] input{background:#0d2037!important;color:#fff!important}
-div[data-testid="stRadio"]>div{gap:8px;flex-wrap:wrap}
-div[data-testid="stRadio"] label{background:linear-gradient(145deg,#102944,#07172a);
+div[data-testid="stRadio"]>div{gap:8px;flex-wrap:nowrap;overflow-x:auto;white-space:nowrap;padding:5px 2px 12px}
+div[data-testid="stRadio"] label{flex:0 0 auto;min-width:max-content;color:#eaf3ff!important;background:linear-gradient(145deg,#102944,#07172a);
  border:1px solid #27608a;border-radius:10px;padding:8px 13px;margin:0;min-height:42px}
 div[data-testid="stRadio"] label:has(input:checked){background:linear-gradient(110deg,#ffdf62,#e8a91d);border:1px solid #fff0a0}
-div[data-testid="stRadio"] label:has(input:checked) p{color:#101827!important;font-weight:900}
+div[data-testid="stRadio"] label p{color:#eaf3ff!important;font-weight:700} div[data-testid="stRadio"] label:has(input:checked) p{color:#101827!important;font-weight:900}
 @media(max-width:700px){
  .block-container{padding-left:.65rem;padding-right:.65rem}
- .sa-hero{gap:13px;padding:13px 11px;border-radius:15px}
- .sa-avatar{width:112px;height:112px;flex-basis:112px}
- .sa-brand-title{font-size:1.65rem;letter-spacing:0}
+ .sa-hero{gap:15px;padding:15px 12px;border-radius:15px}
+ .sa-avatar{width:150px;height:150px;flex-basis:150px}
+ .sa-brand-title{font-size:1.75rem;letter-spacing:0}
  .sa-subtitle{font-size:.65rem;letter-spacing:0}
  .sa-credit{font-size:.72rem}
  .sa-live{font-size:.58rem;padding:5px 7px}
