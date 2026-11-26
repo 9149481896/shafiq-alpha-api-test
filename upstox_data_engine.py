@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import requests, gzip, io, time, base64, html, json
+import requests, gzip, io, time, base64, html, json, re
 from urllib.parse import quote
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ============================================================
 # SHAFIQ ALPHA | STOCK MARKET RESEARCH & INTELLIGENCE
@@ -178,7 +179,7 @@ render_brand()
 # Session state
 for k,v in {
  "instruments":None,"market_data":None,"scanner_data":None,
- "last_refresh":None,"last_custom_result":None,"custom_conditions":[]
+ "last_refresh":None,"last_custom_result":None,"custom_conditions":[],"adv_conditions":[]
 }.items():
     if k not in st.session_state: st.session_state[k]=v
 
@@ -277,7 +278,7 @@ def add_indicators(d):
     d["RSI 14"]=rsi(c); return d
 
 def get_history(key,years=5):
-    end=date.today(); start=end-timedelta(days=365*years)
+    end=date.today(); start=end-timedelta(days=int(365*years))
     u=f"{BASE}/v3/historical-candle/{key}/days/1/{end}/{start}"
     x=api_get(u,timeout=45); candles=x.get("data",{}).get("candles",[]) if "error" not in x else []
     if not candles: return pd.DataFrame()
@@ -340,8 +341,8 @@ def apply_filters(d,conditions,logic):
 # ---------- Scanner / Screener data ----------
 SCREEN_COLUMNS=["Symbol","Company","Exchange","Security Type","LTP","Change %","Net Change","Volume",
     "Est. Traded Value (Cr)","Open","High","Low","Close","Average Price","Buy Quantity","Sell Quantity",
-    "ISIN","Quote Time"]
-TEXT_COLUMNS=["Symbol","Company","Exchange","Security Type","ISIN","Quote Time"]
+    "ISIN","Quote Time","Instrument Key"]
+TEXT_COLUMNS=["Symbol","Company","Exchange","Security Type","ISIN","Quote Time","Instrument Key"]
 OPERATORS=[">",">=","<","<=","=","!="]
 
 def screener_view(d):
@@ -359,23 +360,143 @@ def type_filter(d,key):
     return d if choice=="ALL" else d[d["Security Type"]==choice]
 
 def show_table(d):
-    formats={c:st.column_config.NumberColumn(format="%.2f") for c in
-        ["LTP","Change %","Net Change","Est. Traded Value (Cr)","Open","High","Low","Close","Average Price"] if c in d}
+    d=d.drop(columns=["Instrument Key"],errors="ignore")
+    formats={c:st.column_config.NumberColumn(format="%.2f") for c in d.columns if pd.api.types.is_float_dtype(d[c])}
     st.dataframe(d,use_container_width=True,hide_index=True,column_config=formats)
 
 def new_condition(field="Volume",operation=">",value=100000.0):
     st.session_state["condition_counter"]=st.session_state.get("condition_counter",0)+1
     return {"id":st.session_state["condition_counter"],"field":field,"operation":operation,"value":float(value)}
 
-def read_filter_file(raw,fields):
-    saved=json.loads(raw.decode("utf-8"))
-    logic=saved["logic"] if saved.get("logic") in ["AND","OR"] else "AND"
-    conditions=[]
-    for c in saved["conditions"]:
-        if c["field"] not in fields or c["operation"] not in OPERATORS:
-            raise ValueError(f'یہ شرط دستیاب نہیں: {c["field"]} {c["operation"]}')
-        conditions.append(new_condition(c["field"],c["operation"],c["value"]))
-    return logic,conditions
+# ---------- Advanced data: RSI / Market Cap / Fundamentals ----------
+TECH_NAMES=["RSI 14","SMA 50","SMA 200","52W High","52W Low"]
+# (display name, match mode, key patterns, endpoint tag)
+ALIAS=[
+ ("Market Cap","exact",["marketcap","mcap","marketcapitalization","marketcapitalisation","marketcapcr"],"KR"),
+ ("PE","exact",["pe","peratio","pettm","priceearnings","priceearningsratio","pricetoearnings"],"KR"),
+ ("ROE %","exact",["roe","returnonequity","roepercent"],"KR"),
+ ("ROCE %","exact",["roce","returnoncapitalemployed"],"KR"),
+ ("Debt/Equity","exact",["debttoequity","debtequity","debtequityratio","de","deratio"],"KR"),
+ ("EPS","exact",["eps","epsttm","earningspershare","basiceps"],"KR"),
+ ("Dividend Yield %","exact",["dividendyield","divyield"],"KR"),
+ ("Promoter Holding %","contains",["promoter"],"SH"),
+]
+ALIAS_NAMES=[a[0] for a in ALIAS]
+FUND_ENDPOINTS={"KR":("key-ratios",{}),"SH":("share-holdings",{}),
+                "IS":("income-statement",{"type":"consolidated","time_period":"quarterly"})}
+
+def norm(s): return re.sub(r"[^a-z0-9]","",str(s).lower())
+
+def flatten(o,p=""):
+    out={}
+    if isinstance(o,dict):
+        for k,v in o.items(): out.update(flatten(v,f"{p}.{k}" if p else str(k)))
+    elif isinstance(o,list):
+        if o: out.update(flatten(o[0],p))   # lists: first row only
+    else: out[p]=o
+    return out
+
+def to_float(v):
+    if v is None or isinstance(v,bool): return None
+    try: return float(str(v).replace(",","").replace("%","").strip())
+    except Exception: return None
+
+def add_aliases(flat):
+    out=dict(flat)
+    for name,mode,pats,tag in ALIAS:
+        for k,v in flat.items():
+            if not k.startswith(tag+"."): continue
+            rest=k.split(".",1)[1]; last=norm(rest.split(".")[-1]); full=norm(rest)
+            ok=(last in pats) if mode=="exact" else (any(p in full for p in pats) and "pledge" not in full)
+            if ok: out[name]=v; break
+    return out
+
+def fund_flat(isin):
+    out={}
+    for tag,(ep,params) in FUND_ENDPOINTS.items():
+        x=api_get(f"{BASE}/v2/fundamentals/{isin}/{ep}",params)
+        if "error" in x: continue
+        for k,v in flatten(x.get("data",x)).items():
+            f=to_float(v)
+            if f is not None: out[f"{tag}.{k}"]=f
+    return add_aliases(out)
+
+def tech_for(key):
+    h=get_history(key,1.5)
+    if h.empty or len(h)<20: return {}
+    last=h.iloc[-1]; y=h.tail(252)
+    return {"RSI 14":last["RSI 14"],"SMA 50":last["SMA 50"],"SMA 200":last["SMA 200"],
+            "52W High":y["High"].max(),"52W Low":y["Low"].min()}
+
+def run_parallel(fn,items,label,workers=4):
+    res={}
+    if not items: return res
+    bar=st.progress(0,text=label)
+    with ThreadPoolExecutor(workers) as ex:
+        futs={ex.submit(fn,i):i for i in items}
+        for n,f in enumerate(as_completed(futs),1):
+            try: res[futs[f]]=f.result()
+            except Exception: res[futs[f]]={}
+            bar.progress(n/len(items),text=f"{label} {n}/{len(items)}")
+    bar.empty()
+    return res
+
+def attach(short,cache,keys):
+    extra=pd.DataFrame([cache.get(k,{}) for k in keys],index=short.index)
+    extra=extra[[c for c in extra.columns if c not in short.columns]]
+    return pd.concat([short,extra],axis=1)
+
+def run_screener(data,c1,l1,c2,l2,limit):
+    base=apply_filters(data,c1,l1)
+    n_base=len(base)
+    if not c2: return base,list(base.columns),n_base,n_base
+    sort_col="Est. Traded Value (Cr)" if "Est. Traded Value (Cr)" in base else "Volume"
+    short=base.sort_values(sort_col,ascending=False).head(limit).copy()
+    used=[c["field"] for c in c2]
+    need_tech=any(f in TECH_NAMES for f in used)
+    need_fund=any(f not in TECH_NAMES for f in used)
+    today=str(date.today())
+    if need_tech:
+        tc=st.session_state.setdefault("tech_cache",{})
+        keys=short["Instrument Key"].astype(str).tolist()
+        missing=[k for k in dict.fromkeys(keys) if f"{k}|{today}" not in tc]
+        for k,v in run_parallel(tech_for,missing,"RSI / Technical ڈیٹا").items(): tc[f"{k}|{today}"]=v
+        short=attach(short,{k:tc.get(f"{k}|{today}",{}) for k in keys},keys)
+        for n in TECH_NAMES:
+            if n not in short: short[n]=np.nan
+    if need_fund:
+        fc=st.session_state.setdefault("fund_cache",{})
+        isins=short["ISIN"].astype(str).tolist()
+        missing=[i for i in dict.fromkeys(isins) if i not in fc]
+        for k,v in run_parallel(fund_flat,missing,"Fundamentals ڈیٹا").items(): fc[k]=v
+        short=attach(short,fc,isins)
+        for n in ALIAS_NAMES:
+            if n not in short: short[n]=np.nan
+        st.session_state["extra_cols"]=sorted({c for v in fc.values() for c in v if c not in ALIAS_NAMES})
+    for f in dict.fromkeys(used):
+        if f in short and short[f].isna().all():
+            st.warning(f'"{f}" کا ڈیٹا Upstox سے نہیں ملا۔ نیچے "دستیاب فیلڈز" دیکھیں۔')
+    result=apply_filters(short,c2,l2)
+    cols=list(data.columns)+(TECH_NAMES if need_tech else [])+(ALIAS_NAMES if need_fund else [])+used
+    cols=[c for c in dict.fromkeys(cols) if c in result.columns]
+    return result,cols,n_base,len(short)
+
+def condition_builder(name,fields,default_field,default_value,prefix,min_one):
+    conds=st.session_state[name]
+    if min_one and not conds: conds.append(new_condition(default_field,">",default_value))
+    if st.button("➕ Add Condition",key=f"add_{prefix}"): conds.append(new_condition(default_field,">",default_value))
+    for n,c in enumerate(list(conds),1):
+        if "id" not in c: c.update(new_condition(c["field"],c["operation"],c["value"]))
+        k=c["id"]
+        a,b,cc,dd=st.columns([2,1,2,1])
+        c["field"]=a.selectbox(f"Field {n}",fields,index=fields.index(c["field"]) if c["field"] in fields else 0,key=f"{prefix}f{k}")
+        c["operation"]=b.selectbox("Operator",OPERATORS,index=OPERATORS.index(c["operation"]),key=f"{prefix}o{k}")
+        c["value"]=cc.number_input("Value",value=float(c["value"]),key=f"{prefix}v{k}")
+        if dd.button("Remove",key=f"{prefix}r{k}"):
+            st.session_state[name]=[x for x in conds if x.get("id")!=k]
+            st.session_state.last_custom_result=None
+            st.rerun()
+    return st.session_state[name]
 
 # ---------- Dashboard components ----------
 def nifty_panel_html(nq, candles):
@@ -544,7 +665,7 @@ elif page=="Market Scanner":
         out=out[pd.to_numeric(out.LTP,errors="coerce").between(lo,hi)&(pd.to_numeric(out.Volume,errors="coerce")>=mv)]
         st.metric("Matching Stocks",f"{len(out):,}")
         show_table(out)
-        st.download_button("⬇️ Export Scanner CSV",out.to_csv(index=False).encode(),"shafiq_alpha_scanner.csv","text/csv")
+        st.download_button("⬇️ Export Scanner CSV",out.drop(columns=["Instrument Key"],errors="ignore").to_csv(index=False).encode(),"shafiq_alpha_scanner.csv","text/csv")
 
 elif page=="Company Search":
     st.markdown('<div class="sa-title">🏢 COMPANY SEARCH</div>',unsafe_allow_html=True)
@@ -608,52 +729,46 @@ elif page=="Custom Screener":
         data=type_filter(data,"screener_type")
         exchange=st.selectbox("Exchange",["ALL"]+sorted(scanner["Exchange"].dropna().unique().tolist()),key="screener_exchange")
         if exchange!="ALL": data=data[data["Exchange"]==exchange]
-        st.caption("Market Cap، RSI اور Fundamentals کے فلٹر ابھی شامل نہیں ہیں۔")
 
-        with st.expander("📂 محفوظ فلٹر کھولیں"):
-            uploaded=st.file_uploader("فلٹر فائل (.json)",type=["json"],key="filter_upload")
-            if uploaded is not None and st.button("Load Filter",key="load_filter"):
-                try:
-                    logic_loaded,loaded=read_filter_file(uploaded.getvalue(),fields)
-                    st.session_state.custom_conditions=loaded
-                    st.session_state["screener_logic"]=logic_loaded
-                    st.session_state.last_custom_result=None
-                    st.success("فلٹر لوڈ ہو گیا۔")
-                except Exception as e: st.error(f"فلٹر فائل نہیں کھلی: {e}")
+        st.markdown("#### 1️⃣ بنیادی فلٹر (Price / Volume)")
+        st.caption("AND میں تمام شرائط پوری ہوں؛ OR میں کم از کم ایک شرط پوری ہو۔")
+        logic1=st.radio("Filter Logic",["AND","OR"],horizontal=True,key="screener_logic")
+        conds1=condition_builder("custom_conditions",fields,"Volume",100000.0,"b1",True)
 
-        st.info("AND میں تمام شرائط پوری ہوں؛ OR میں کم از کم ایک شرط پوری ہو۔")
-        logic=st.radio("Filter Logic",["AND","OR"],horizontal=True,key="screener_logic")
-        conditions=st.session_state.custom_conditions
-        if not conditions: conditions.append(new_condition())
-        if st.button("➕ Add Condition"): conditions.append(new_condition(fields[0],">",0))
-        for n,c in enumerate(list(conditions),1):
-            if "id" not in c: c.update(new_condition(c["field"],c["operation"],c["value"]))
-            k=c["id"]
-            a,b,cc,dd=st.columns([2,1,2,1])
-            c["field"]=a.selectbox(f"Field {n}",fields,index=fields.index(c["field"]) if c["field"] in fields else 0,key=f"f{k}")
-            c["operation"]=b.selectbox("Operator",OPERATORS,index=OPERATORS.index(c["operation"]),key=f"o{k}")
-            c["value"]=cc.number_input("Value",value=float(c["value"]),key=f"v{k}")
-            if dd.button("Remove",key=f"r{k}"):
-                st.session_state.custom_conditions=[x for x in conditions if x.get("id")!=k]
-                st.session_state.last_custom_result=None
-                st.rerun()
+        st.markdown("#### 2️⃣ RSI / Market Cap / Fundamentals")
+        st.caption("یہ فلٹر صرف پہلے فلٹر کے نتیجے (زیادہ ٹریڈ ویلیو والے اسٹاکس) پر چلتے ہیں۔ خالی چھوڑیں تو یہ مرحلہ نہیں چلے گا۔")
+        limit=st.slider("زیادہ سے زیادہ اسٹاکس جن کا ڈیٹا منگوانا ہے",10,300,100,10,key="adv_limit")
+        logic2=st.radio("Logic (مرحلہ 2)",["AND","OR"],horizontal=True,key="adv_logic")
+        adv_fields=TECH_NAMES+ALIAS_NAMES+[c for c in st.session_state.get("extra_cols",[]) if c not in ALIAS_NAMES]
+        conds2=condition_builder("adv_conditions",adv_fields,"RSI 14",30.0,"b2",False)
+        show_all=st.checkbox("تمام خام کالم دکھائیں",key="adv_show_all")
+        with st.expander("🔧 دستیاب فیلڈز (Upstox سے ملے)"):
+            ex_cols=st.session_state.get("extra_cols",[])
+            if ex_cols: st.write(", ".join(ex_cols))
+            else: st.caption("پہلی بار Run کرنے کے بعد یہاں فہرست آئے گی۔")
 
-        saved={"logic":logic,"conditions":[{x:c[x] for x in ["field","operation","value"]} for c in conditions]}
-        st.download_button("💾 یہ فلٹر محفوظ کریں",json.dumps(saved,indent=2).encode(),"shafiq_alpha_filter.json","application/json")
-
-        # Results always follow the conditions and selections currently on screen
-        signature=json.dumps([saved,exchange,st.session_state.get("screener_type"),st.session_state.last_refresh])
+        def mini(cs): return [{x:c[x] for x in ["field","operation","value"]} for c in cs]
+        signature=json.dumps([mini(conds1),logic1,mini(conds2),logic2,limit,exchange,
+                              st.session_state.get("screener_type"),st.session_state.last_refresh],default=str)
         if st.button("🚀 Run Custom Screener"):
-            st.session_state.last_custom_result=apply_filters(data,conditions,logic)
+            res,cols,n_base,n_short=run_screener(data,conds1,logic1,conds2,logic2,limit)
+            st.session_state.last_custom_result=res
+            st.session_state["result_cols"]=cols
+            st.session_state["result_info"]=(n_base,n_short)
             st.session_state["result_signature"]=signature
         result=st.session_state.last_custom_result
         if isinstance(result,pd.DataFrame):
             if st.session_state.get("result_signature")!=signature:
                 st.warning("شرائط بدل گئی ہیں۔ دوبارہ Run Custom Screener دبائیں۔")
             else:
-                st.success(f"{len(result):,} of {len(data):,} listings matched.")
-                show_table(result)
-                st.download_button("⬇️ Export Custom Screener",result.to_csv(index=False).encode(),"shafiq_alpha_custom_screener.csv","text/csv")
+                n_base,n_short=st.session_state.get("result_info",(len(result),len(result)))
+                if n_short!=n_base or conds2:
+                    st.success(f"بنیادی فلٹر: {n_base:,} ملے · ڈیٹا چیک: {n_short:,} · آخری نتیجہ: {len(result):,}")
+                else:
+                    st.success(f"{len(result):,} of {len(data):,} listings matched.")
+                shown=result if show_all else result[[c for c in st.session_state.get("result_cols",list(result.columns)) if c in result.columns]]
+                show_table(shown)
+                st.download_button("⬇️ Export Custom Screener",shown.drop(columns=["Instrument Key"],errors="ignore").to_csv(index=False).encode(),"shafiq_alpha_custom_screener.csv","text/csv")
 
 st.divider()
 st.markdown("""<div style="text-align:center;color:#9eb5d1;padding:12px">
