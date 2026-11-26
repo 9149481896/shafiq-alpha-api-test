@@ -1,9 +1,10 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import requests, gzip, io, time, base64
+import requests, gzip, io, time, base64, html
+from urllib.parse import quote
 from pathlib import Path
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 # ============================================================
 # SHAFIQ ALPHA | STOCK MARKET RESEARCH & INTELLIGENCE
@@ -15,7 +16,7 @@ st.set_page_config(
     page_title="SHAFIQ ALPHA | Stock Market Intelligence",
     page_icon="📈",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="auto"
 )
 
 BASE = "https://api.upstox.com"
@@ -24,6 +25,7 @@ INSTRUMENT_URLS = {
     "BSE": "https://assets.upstox.com/market-quote/instruments/exchange/BSE.json.gz"
 }
 NIFTY_KEY = "NSE_INDEX|Nifty 50"
+IST = timezone(timedelta(hours=5, minutes=30))
 
 st.markdown("""
 <style>
@@ -35,36 +37,70 @@ html,body,[class*="css"]{font-family:Inter,sans-serif}
  radial-gradient(ellipse at 94% 10%,rgba(0,220,130,.11),transparent 28%),
  linear-gradient(145deg,#061326 0%,#020813 58%,#071326 100%);color:#eef5ff}
 #MainMenu,footer{visibility:hidden}
-.block-container{max-width:1600px;padding:1rem 1.1rem 2rem}
+.block-container{max-width:1300px;padding:3.8rem 1.1rem 2rem}
+[data-testid="stHeader"]{background:rgba(3,10,22,.92)}
 [data-testid="stSidebar"]{background:#07172b}
 h1,h2,h3{color:#f4d477!important}
-.sa-hero{display:flex;align-items:center;gap:25px;position:relative;overflow:hidden;
- padding:22px 26px;margin:2px 0 14px;border-radius:22px;
- border:1px solid rgba(255,205,73,.75);
- background:radial-gradient(ellipse at 88% 15%,rgba(0,230,135,.17),transparent 28%),
- linear-gradient(110deg,#07172c,#06101f 62%,#08213a);
+.sa-hero{display:flex;align-items:center;gap:28px;position:relative;overflow:hidden;
+ padding:20px 24px 30px;margin:0 0 12px;border-radius:20px;border:1px solid rgba(255,205,73,.65);
+ background:radial-gradient(ellipse at 86% 20%,rgba(0,230,120,.20),transparent 34%),linear-gradient(110deg,#07172c,#050d1b 60%,#08213a);
  box-shadow:0 12px 34px rgba(0,0,0,.45),inset 0 0 28px rgba(0,145,255,.12)}
-.sa-hero:after{content:"";position:absolute;left:-5%;right:-5%;bottom:4px;height:8px;
+.sa-hero:after{content:"";position:absolute;left:-5%;right:-5%;bottom:5px;height:9px;
  background:linear-gradient(90deg,#06b8ff,#f4b928,#fff0a3,#f2a900,#08b9ff);
  transform:rotate(-1.2deg);filter:drop-shadow(0 0 8px #e8b82c)}
-.sa-avatar{width:220px;height:220px;flex:0 0 220px;padding:5px;border-radius:50%;
- background:linear-gradient(135deg,#fff4ae,#e8a91d,#fff2a3);
- box-shadow:0 0 0 5px rgba(242,190,54,.16),0 0 32px rgba(255,192,45,.42)}
-.sa-avatar img{width:100%;height:100%;object-fit:cover;object-position:center 18%;transform:scale(1.12);
- border-radius:50%;border:3px solid #061326}
-.sa-brand-title{font-size:clamp(2.4rem,5vw,4.4rem);font-weight:900;line-height:1.03;
- letter-spacing:.025em;background:linear-gradient(100deg,#ffbd25,#fff1b4 32%,#dceeff 53%,#13c9ff 78%,#71f5ce);
- -webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.sa-subtitle{font-size:clamp(.85rem,1.7vw,1.25rem);font-weight:800;letter-spacing:.07em;color:#f5f8ff;margin-top:9px}
-.sa-credit{font-size:1rem;color:#d5e3f6;margin-top:9px}
-.sa-live{display:inline-block;margin-top:11px;padding:7px 13px;border-radius:20px;color:#7fffc2;
- background:rgba(0,220,130,.10);border:1px solid rgba(0,230,145,.45);font-size:.76rem;font-weight:800}
+.sa-avatar{width:240px;aspect-ratio:1;flex:0 0 240px;box-sizing:border-box;padding:6px;border-radius:50%;
+ background:linear-gradient(135deg,#fff4ae,#e8a91d 55%,#fff2a3);position:relative;z-index:1;
+ box-shadow:0 0 0 5px rgba(242,190,54,.16),0 0 32px rgba(255,192,45,.45)}
+.sa-face{width:100%;height:100%;overflow:hidden;position:relative;border-radius:50%;background:#fff}
+/* Crops the empty white area of the 800x800 portrait so the face fills the circle */
+.sa-face img{position:absolute;width:173.9%!important;max-width:none!important;height:auto;left:-15.2%;top:-37%;margin:0}
+.sa-brand{min-width:0;position:relative;z-index:1}
+.sa-brand-title{font-size:clamp(2.1rem,5.4vw,4.4rem);font-weight:900;line-height:1.05;
+ background:linear-gradient(180deg,#fff3b0 10%,#f6c43c 55%,#c98a0c);
+ -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.sa-subtitle{font-size:clamp(.82rem,1.7vw,1.3rem);font-weight:800;color:#fff;margin-top:8px}
+.sa-credit{font-size:clamp(.78rem,1.2vw,1rem);color:#d5e3f6;margin-top:8px}
+.sa-live{display:inline-block;margin-top:11px;padding:6px 12px;border-radius:20px;color:#7fffc2;
+ background:rgba(0,220,130,.10);border:1px solid rgba(0,230,145,.45);font-size:.72rem;font-weight:800}
+.sa-art{position:absolute;right:10px;top:8px;width:25%;max-height:75%;opacity:.8;pointer-events:none}
 .sa-title{font-size:1.3rem;font-weight:900;color:#f5d66d;margin:16px 0 10px}
+.sa-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:4px 0 14px}
+.sa-kpi{display:flex;align-items:center;gap:12px;padding:16px 14px;border-radius:15px;border:1px solid;min-width:0;
+ box-shadow:inset 0 0 22px rgba(255,255,255,.07),0 8px 20px rgba(0,0,0,.35)}
+.sa-kpi i{font-style:normal;font-size:2rem}
+.sa-kpi span{display:block;font-size:.82rem;font-weight:700;color:#eaf3ff}
+.sa-kpi b{display:block;font-size:1.75rem;font-weight:900;color:#fff;line-height:1.2}
+.sa-kpi small{display:block;font-size:.68rem;color:#cfe0f5}
+.sa-blue{background:linear-gradient(145deg,#0a4fb4,#061c45);border-color:#2492ff}
+.sa-green{background:linear-gradient(145deg,#087a2c,#04261a);border-color:#2ee66b}
+.sa-purple{background:linear-gradient(145deg,#6a1b9a,#220a3d);border-color:#c45cff}
+.sa-orange{background:linear-gradient(145deg,#b35a00,#3d1d03);border-color:#ffa126}
+.sa-grid{display:grid;grid-template-columns:minmax(0,1.9fr) minmax(0,1fr);gap:14px;margin-bottom:14px}
 .sa-panel{background:linear-gradient(145deg,rgba(9,37,66,.97),rgba(4,15,31,.98));
- border:1px solid rgba(46,157,232,.75);border-radius:17px;padding:14px 16px;
+ border:1px solid rgba(46,157,232,.75);border-radius:17px;padding:14px 16px;min-width:0;
  box-shadow:0 9px 25px rgba(0,0,0,.28)}
-.sa-snapshot-row{display:flex;justify-content:space-between;gap:10px;padding:10px 2px;
+.sa-panel.sa-snap{border-color:#8a63d2}
+.sa-panel.sa-top{border-color:#b9922f;padding:14px 10px}
+.sa-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;
+ font-size:1.12rem;font-weight:900;color:#fff;margin-bottom:10px}
+.sa-top .sa-head{color:#f5d66d}
+.sa-pill{font-size:.82rem;padding:6px 12px;border-radius:20px;border:1px solid}
+.sa-pill.up{color:#43f58a;border-color:#1d9e55;background:#073a24}
+.sa-pill.down{color:#ff7474;border-color:#a53b3b;background:#3a0d12}
+.sa-chart{display:flex;gap:6px}
+.sa-yaxis{display:flex;flex-direction:column;justify-content:space-between;height:200px;font-size:.7rem;color:#bcd0ea;text-align:right}
+.sa-plot{flex:1;min-width:0}
+.sa-plot img{width:100%!important;max-width:100%!important;height:200px;display:block}
+.sa-xaxis{display:flex;justify-content:space-between;font-size:.7rem;color:#bcd0ea;margin-top:5px}
+.sa-note{font-size:.7rem;color:#93acc9;margin-top:7px}
+.sa-snapshot-row{display:flex;justify-content:space-between;gap:10px;padding:13px 2px;
  border-bottom:1px solid rgba(121,176,220,.24);color:#eaf3ff}
+.sa-table{width:100%;border-collapse:collapse;table-layout:auto;margin:0;font-size:.86rem;color:#eef5ff}
+.sa-table th{background:#0c3a6e;color:#fff;padding:9px 8px;border:1px solid #1d4f80;text-align:left}
+.sa-table td{padding:9px 8px;border:1px solid #17395d}
+.sa-table .num{text-align:right;white-space:nowrap}
+.sa-table .sub{display:none;font-size:.62rem;font-weight:500;color:#a9c0dc}
+.sa-up{color:#2ef07c}.sa-down{color:#ff5c5c}.sa-flat{color:#ffca43}
 .stButton>button,.stDownloadButton>button{border:1px solid rgba(255,220,103,.8)!important;
  border-radius:10px!important;background:linear-gradient(110deg,#ffe37a,#d99a18)!important;
  color:#111827!important;font-weight:900!important;min-height:2.55rem}
@@ -74,41 +110,68 @@ div[data-testid="stMetric"] label{color:#d9eaff!important;font-weight:700}
 div[data-testid="stMetric"] [data-testid="stMetricValue"]{color:#fff!important;font-weight:900}
 [data-testid="stDataFrame"],[data-testid="stTable"]{border:1px solid rgba(43,150,230,.75);border-radius:12px;overflow:hidden}
 [data-testid="stTextInput"] input,[data-testid="stNumberInput"] input{background:#0d2037!important;color:#fff!important}
-div[data-testid="stRadio"]>div{gap:8px;flex-wrap:nowrap;overflow-x:auto;white-space:nowrap;padding:5px 2px 12px}
-div[data-testid="stRadio"] label{flex:0 0 auto;min-width:max-content;color:#eaf3ff!important;background:linear-gradient(145deg,#102944,#07172a);
- border:1px solid #27608a;border-radius:10px;padding:8px 13px;margin:0;min-height:42px}
-div[data-testid="stRadio"] label:has(input:checked){background:linear-gradient(110deg,#ffdf62,#e8a91d);border:1px solid #fff0a0}
-div[data-testid="stRadio"] label p{color:#eaf3ff!important;font-weight:700} div[data-testid="stRadio"] label:has(input:checked) p{color:#101827!important;font-weight:900}
+.st-key-top_navigation,.st-key-top_navigation [data-testid="stRadio"]{width:100%!important}
+.st-key-top_navigation [role="radiogroup"]{display:grid!important;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;width:100%}
+.st-key-top_navigation [role="radiogroup"] label{display:flex;justify-content:center;align-items:center;margin:0;
+ min-height:50px;padding:6px 4px;border-radius:11px;border:1px solid #27608a;background:linear-gradient(145deg,#102944,#07172a)}
+.st-key-top_navigation [role="radiogroup"] label>div:first-child:not(:has(p)){display:none}
+.st-key-top_navigation label p{color:#eaf3ff!important;font-weight:700;font-size:.84rem;text-align:center;line-height:1.25}
+.st-key-top_navigation label:has(input:checked){background:linear-gradient(110deg,#ffdf62,#e8a91d);border-color:#fff0a0;box-shadow:0 0 14px rgba(255,200,50,.5)}
+.st-key-top_navigation label:has(input:checked) p{color:#101827!important;font-weight:900}
+@media(max-width:900px){.sa-grid{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:700px){
- .block-container{padding-left:.65rem;padding-right:.65rem}
- .sa-hero{gap:12px;padding:15px 10px;border-radius:15px;min-height:230px}
- .sa-avatar{width:190px;height:190px;flex-basis:190px}
- .sa-brand-title{font-size:1.75rem;letter-spacing:0}
- .sa-subtitle{font-size:.65rem;letter-spacing:0}
- .sa-credit{font-size:.72rem}
- .sa-live{font-size:.58rem;padding:5px 7px}
+ .block-container{padding-left:.6rem;padding-right:.6rem}
+ .sa-hero{gap:12px;padding:16px 10px 28px;border-radius:15px}
+ .sa-avatar{width:44vw;flex-basis:44vw;max-width:240px;padding:4px}
+ .sa-brand-title{font-size:clamp(1.8rem,10vw,3rem)}
+ .sa-subtitle{font-size:.7rem}
+ .sa-credit{font-size:.7rem}
+ .sa-live{font-size:.56rem;padding:5px 7px}
+ .sa-art{display:none}
+ .st-key-top_navigation [role="radiogroup"]{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+ .st-key-top_navigation label p{font-size:.72rem}
+ .sa-kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+ .sa-kpi{gap:8px;padding:12px 8px}.sa-kpi i{font-size:1.4rem}.sa-kpi b{font-size:1.3rem}.sa-kpi span{font-size:.7rem}
+ .sa-panel.sa-top{padding:10px 5px}
+ .sa-table{font-size:.68rem}.sa-table th,.sa-table td{padding:7px 3px}
+ .sa-table .wide{display:none}
+ .sa-table .sub{display:block;max-width:24vw;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 }
 </style>
 """, unsafe_allow_html=True)
+
+def image_uri(path, mime="image/png"):
+    return f"data:{mime};base64,"+base64.b64encode(path.read_bytes()).decode("ascii")
+
+def svg_uri(svg):
+    return "data:image/svg+xml;base64,"+base64.b64encode(svg.encode()).decode("ascii")
+
+def header_art():
+    # Optional: upload assets/bull.png to show your own bull artwork in the header
+    bull = Path(__file__).parent / "assets" / "bull.png"
+    if bull.exists(): return image_uri(bull)
+    bars=[(12,92,22),(34,80,28),(56,86,18),(78,66,30),(100,72,20),(122,52,32),(144,58,22),(166,36,34),(188,42,22),(210,20,34)]
+    body="".join(f'<line x1="{x+5}" y1="{y-9}" x2="{x+5}" y2="{y+h+9}" stroke="{c}" stroke-width="1.5"/><rect x="{x}" y="{y}" width="10" height="{h}" fill="{c}"/>'
+        for i,(x,y,h) in enumerate(bars) for c in ["#e5484d" if i%3==2 else "#22d366"])
+    arrow='<path d="M8 82 C70 78 110 55 200 8" fill="none" stroke="#3dff8b" stroke-width="3"/><path d="M184 6 L204 5 L195 23 Z" fill="#3dff8b"/>'
+    return svg_uri(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 232 140">{body}{arrow}</svg>')
 
 def render_brand():
     photo = Path(__file__).parent / "assets" / "founder_portrait.png"
     if not photo.exists():
         photo = Path(__file__).parent / "founder_portrait.png"
     if photo.exists():
-        encoded = base64.b64encode(photo.read_bytes()).decode("ascii")
-        avatar = f'<div class="sa-avatar"><img src="data:image/png;base64,{encoded}" alt="Founder"></div>'
+        avatar = f'<div class="sa-avatar"><div class="sa-face"><img src="{image_uri(photo)}" alt="Magray Shafiq"></div></div>'
     else:
         avatar = '<div class="sa-avatar" style="display:grid;place-items:center;color:#111;font-size:2rem;font-weight:900">SA</div>'
-    st.markdown(f"""
-    <div class="sa-hero">{avatar}
-      <div style="min-width:0;position:relative;z-index:1">
-        <div class="sa-brand-title">SHAFIQ ALPHA</div>
-        <div class="sa-subtitle">STOCK MARKET RESEARCH &amp; INTELLIGENCE</div>
-        <div class="sa-credit">Founded &amp; Developed by Magray Shafiq</div>
-        <div class="sa-live">● MARKET RESEARCH &nbsp; | &nbsp; PAPER TRADING ONLY</div>
-      </div>
-    </div>""", unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="sa-hero">{avatar}<div class="sa-brand">'
+        '<div class="sa-brand-title">SHAFIQ ALPHA</div>'
+        '<div class="sa-subtitle">STOCK MARKET RESEARCH &amp; INTELLIGENCE</div>'
+        '<div class="sa-credit">Founded &amp; Developed by Magray Shafiq</div>'
+        '<div class="sa-live">● MARKET RESEARCH | PAPER TRADING ONLY</div>'
+        f'</div><img class="sa-art" src="{header_art()}" alt=""></div>',
+        unsafe_allow_html=True)
 
 render_brand()
 
@@ -161,7 +224,10 @@ def load_all_instruments():
 
 def fetch_quote_batch(keys):
     d=api_get(f"{BASE}/v2/market-quote/quotes",{"instrument_key":",".join(keys)},timeout=45)
-    return d.get("data",{}) if "error" not in d else {}
+    if "error" in d:
+        st.session_state["quote_error"]=f'{d.get("error")}: {d.get("message","")}'
+        return {}
+    return d.get("data",{})
 
 def fetch_all_quotes(instruments,progress=None):
     if instruments.empty: return pd.DataFrame()
@@ -220,13 +286,22 @@ def get_history(key,years=5):
     for c in ["Open","High","Low","Close","Volume"]: d[c]=pd.to_numeric(d[c],errors="coerce")
     return add_indicators(d.sort_values("Date"))
 
-def get_nifty_intraday():
-    u=f"{BASE}/v3/historical-candle/intraday/{NIFTY_KEY}/1minute"
-    x=api_get(u); rows=x.get("data",{}).get("candles",[]) if "error" not in x else []
+def candle_frame(payload):
+    rows=payload.get("data",{}).get("candles",[]) if "error" not in payload else []
     if not rows: return pd.DataFrame()
     d=pd.DataFrame(rows,columns=["Date","Open","High","Low","Close","Volume","OI"])
     d["Date"]=pd.to_datetime(d["Date"]); d["Close"]=pd.to_numeric(d["Close"],errors="coerce")
-    return d.sort_values("Date")
+    return d.dropna(subset=["Close"]).sort_values("Date")
+
+def get_nifty_intraday():
+    key=quote(NIFTY_KEY,safe="")
+    d=candle_frame(api_get(f"{BASE}/v3/historical-candle/intraday/{key}/minutes/1"))
+    if not d.empty: return d
+    # Market closed / before open: show the most recent trading session
+    end=datetime.now(IST).date(); start=end-timedelta(days=10)
+    d=candle_frame(api_get(f"{BASE}/v3/historical-candle/{key}/minutes/1/{end}/{start}"))
+    if d.empty: return d
+    return d[d["Date"].dt.date==d["Date"].dt.date.max()]
 
 @st.cache_data(ttl=60,show_spinner=False)
 def cached_nifty(): return get_nifty_intraday()
@@ -262,11 +337,118 @@ def apply_filters(d,conditions,logic):
     for m in masks[1:]: result=(result&m) if logic=="AND" else (result|m)
     return d[result]
 
+# ---------- Dashboard components ----------
+def nifty_panel_html(nq, candles):
+    pill=""; up=True
+    if nq.get("last_price") is not None:
+        lp=float(nq["last_price"]); text=f"NIFTY 50&nbsp; {lp:,.2f}"
+        if nq.get("net_change") is not None:
+            ch=float(nq["net_change"]); prev=lp-ch; up=ch>=0
+            if prev: text+=f"&nbsp; {'▲' if up else '▼'} {ch/prev*100:+.2f}%"
+        pill=f'<span class="sa-pill {"up" if up else "down"}">{text}</span>'
+    elif not candles.empty:
+        up=candles["Close"].iloc[-1]>=candles["Close"].iloc[0]
+    head=f'<div class="sa-panel"><div class="sa-head"><span>📈 Market Overview</span>{pill}</div>'
+    if candles.empty:
+        return head+'<div class="sa-note">NIFTY 50 chart data فی الحال دستیاب نہیں۔</div></div>'
+    day=candles["Date"].iloc[-1]
+    open_t=day.replace(hour=9,minute=15,second=0); close_t=day.replace(hour=15,minute=30,second=0)
+    first=min(open_t,candles["Date"].iloc[0]); last=max(close_t,candles["Date"].iloc[-1])
+    span=(last-first).total_seconds()
+    lo=float(candles["Close"].min()); hi=float(candles["Close"].max())
+    pad=max((hi-lo)*.1,1.0); lo-=pad; hi+=pad
+    pts=" ".join(f"{(t-first).total_seconds()/span*1000:.1f},{(hi-v)/(hi-lo)*300:.1f}" for t,v in zip(candles["Date"],candles["Close"]))
+    x0=(candles["Date"].iloc[0]-first).total_seconds()/span*1000
+    x1=(candles["Date"].iloc[-1]-first).total_seconds()/span*1000
+    color="#35f06f" if up else "#ff5a5a"
+    grid="".join(f'<line x1="0" x2="1000" y1="{y}" y2="{y}" stroke="#7fa8d0" stroke-opacity=".22" vector-effect="non-scaling-stroke"/>' for y in (1,100,200,299))
+    svg=('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 300" preserveAspectRatio="none">'
+         f'<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{color}" stop-opacity=".55"/><stop offset="1" stop-color="{color}" stop-opacity=".03"/></linearGradient></defs>{grid}'
+         f'<polygon points="{x0:.1f},300 {pts} {x1:.1f},300" fill="url(#g)"/>'
+         f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>')
+    yl="".join(f"<span>{hi-(hi-lo)*i/3:,.0f}</span>" for i in range(4))
+    xl="".join(f"<span>{(first+timedelta(seconds=span*i/4)).strftime('%H:%M')}</span>" for i in range(5))
+    return (head+f'<div class="sa-chart"><div class="sa-yaxis">{yl}</div><div class="sa-plot">'
+            f'<img src="{svg_uri(svg)}" alt="NIFTY 50 intraday chart"><div class="sa-xaxis">{xl}</div></div></div>'
+            f'<div class="sa-note">Session: {day.strftime("%d %b %Y")} · 1-minute candles · Upstox</div></div>')
+
+def with_change_pct(d):
+    d=d.copy()
+    ltp=pd.to_numeric(d["LTP"],errors="coerce"); ch=pd.to_numeric(d["Net Change"],errors="coerce")
+    prev=ltp-ch
+    d["Change %"]=(ch/prev.where(prev>0))*100
+    return d
+
+def kpi_html(d):
+    isin=d["ISIN"].dropna().astype(str)
+    counts=d["Exchange"].value_counts()
+    names=[e for e in ["NSE","BSE"] if counts.get(e,0)>0]
+    cards=[
+      ("sa-blue","👥","Total Companies",f"{isin.nunique():,}",f"{len(d):,} listings"),
+      ("sa-green","📈","Live Prices",f"{int(d['LTP'].notna().sum()):,}",f"of {len(d):,} listings"),
+      ("sa-purple","📚","Volume Available",f"{int(d['Volume'].notna().sum()):,}",f"of {len(d):,} listings"),
+      ("sa-orange","🏦","Exchanges"," + ".join(names) or "—"," · ".join(f"{e} {int(counts.get(e,0)):,}" for e in ["NSE","BSE"]))]
+    return '<div class="sa-kpis">'+"".join(f'<div class="sa-kpi {c}"><i>{i}</i><div><span>{t}</span><b>{v}</b><small>{n}</small></div></div>' for c,i,t,v,n in cards)+'</div>'
+
+def snapshot_html(d):
+    valid=with_change_pct(d.dropna(subset=["LTP"]))
+    chg=pd.to_numeric(valid["Net Change"],errors="coerce").dropna()
+    vol=pd.to_numeric(valid["Volume"],errors="coerce").fillna(0)
+    avg=pd.to_numeric(valid["Average Price"],errors="coerce").fillna(pd.to_numeric(valid["LTP"],errors="coerce"))
+    traded=float((avg*vol).sum()/1e7)
+    rows=[("🟢 Advances",f"{int((chg>0).sum()):,}","sa-up"),("🔻 Declines",f"{int((chg<0).sum()):,}","sa-down"),
+          ("➖ Unchanged",f"{int((chg==0).sum()):,}","sa-flat"),("💹 Est. Traded Value",f"₹ {traded:,.0f} Cr","")]
+    return ('<div class="sa-panel sa-snap"><div class="sa-head"><span>🌐 Market Snapshot</span></div>'
+        +"".join(f'<div class="sa-snapshot-row"><span>{a}</span><b class="{c}">{b}</b></div>' for a,b,c in rows)
+        +'<div class="sa-note">Listing-wise counts. Traded value is an estimate (average price × volume), not official turnover.</div></div>')
+
+def indian_number(n):
+    s=str(int(n))
+    if len(s)<=3: return s
+    head,tail=s[:-3],s[-3:]; parts=[]
+    while len(head)>2: parts.insert(0,head[-2:]); head=head[:-2]
+    return ",".join([head]+parts+[tail])
+
+def top_volume_html(d):
+    top=with_change_pct(d.dropna(subset=["Volume"]).sort_values("Volume",ascending=False).head(5))
+    body=""
+    for n,(_,r) in enumerate(top.iterrows(),1):
+        sym=html.escape(str(r["Symbol"])); name=html.escape(str(r["Company"]))
+        pct=r["Change %"]
+        if pd.isna(pct): change,cls="—",""
+        elif pct>0: change,cls=f"▲ +{pct:.2f}%","sa-up"
+        elif pct<0: change,cls=f"▼ {pct:.2f}%","sa-down"
+        else: change,cls="0.00%","sa-flat"
+        ltp="—" if pd.isna(r["LTP"]) else f'{r["LTP"]:,.2f}'
+        ex=html.escape(str(r["Exchange"]))
+        body+=(f'<tr><td>{n}</td><td><b>{sym}</b><span class="sub">{ex} · {name}</span></td><td class="wide">{name}</td>'
+               f'<td class="wide">{ex}</td><td class="num">{ltp}</td><td class="num {cls}">{change}</td><td class="num">{indian_number(r["Volume"])}</td></tr>')
+    if not body: body='<tr><td colspan="7">Volume data ابھی دستیاب نہیں۔</td></tr>'
+    return ('<div class="sa-panel sa-top"><div class="sa-head"><span>🏆 Top 5 Volume Stocks</span></div><table class="sa-table"><thead><tr>'
+            '<th>#</th><th>Symbol</th><th class="wide">Company</th><th class="wide">Exchange</th><th>LTP (₹)</th><th>Change %</th><th>Volume</th>'
+            f'</tr></thead><tbody>{body}</tbody></table></div>')
+
+def refresh_market_data():
+    st.session_state["quote_error"]=None
+    p=st.progress(0)
+    with st.spinner("Fetching Upstox Full Market Quotes..."):
+        q=fetch_all_quotes(st.session_state.instruments,p)
+    p.empty()
+    err=st.session_state.get("quote_error")
+    if q.empty:
+        st.error(f"Upstox سے کوئی Quote نہیں ملا۔ {err or ''}")
+        return False
+    st.session_state.market_data=q
+    st.session_state.scanner_data=build_scanner_data(st.session_state.instruments,q)
+    st.session_state.last_refresh=datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
+    if err: st.warning(f"کچھ Quotes نہیں ملے: {err}")
+    st.success(f"{len(q):,} quote records received")
+    return True
+
 # Top navigation replaces the old left-side radio menu
 pages=["Dashboard","Market Scanner","Company Search","Company Fundamentals","Historical Analysis","Custom Screener"]
-icons=["🏠","🔎","🏢","📊","📈","⚙️"]
-page=st.radio("MAIN MENU",pages,horizontal=True,format_func=lambda x:f"{icons[pages.index(x)]} {x}",key="top_navigation")
-st.markdown("---")
+nav_labels=["🏠 Dashboard","🔎 Market Scanner","🏢 Company Search","📊 Fundamentals","📈 Historical","⚙️ Custom Screener"]
+page=st.radio("MAIN MENU",pages,horizontal=True,format_func=lambda x:nav_labels[pages.index(x)],key="top_navigation",label_visibility="collapsed")
 
 with st.sidebar:
     st.markdown("## ⚙️ CONTROL PANEL")
@@ -277,14 +459,7 @@ with st.sidebar:
         st.success(f"{len(st.session_state.instruments):,} instruments loaded")
     if st.button("📡 Refresh Live Market Data",use_container_width=True):
         if st.session_state.instruments is None: st.error("پہلے Database ڈاؤن لوڈ کریں۔")
-        else:
-            p=st.progress(0)
-            with st.spinner("Fetching Upstox Full Market Quotes..."):
-                q=fetch_all_quotes(st.session_state.instruments,p)
-                st.session_state.market_data=q
-                st.session_state.scanner_data=build_scanner_data(st.session_state.instruments,q)
-                st.session_state.last_refresh=time.strftime("%Y-%m-%d %H:%M:%S")
-            st.success(f"{len(q):,} quote records received")
+        else: refresh_market_data()
     st.divider()
     st.caption(f"Database: {len(st.session_state.instruments):,}" if st.session_state.instruments is not None else "Database: Not loaded")
     st.caption(f"Market Quotes: {len(st.session_state.market_data):,}" if st.session_state.market_data is not None else "Market Quotes: Not loaded")
@@ -294,46 +469,27 @@ instruments=st.session_state.instruments
 scanner=st.session_state.scanner_data
 
 if page=="Dashboard":
-    st.markdown('<div class="sa-title">📊 MARKET DASHBOARD</div>',unsafe_allow_html=True)
-    if scanner is None or scanner.empty:
-        st.info("شروع کرنے کے لیے Sidebar میں Download NSE + BSE Database، پھر Refresh Live Market Data دبائیں۔")
+    if st.button("🔄 Load / Refresh Live Market Data",use_container_width=True,key="dashboard_refresh"):
+        if st.session_state.instruments is None or st.session_state.instruments.empty:
+            with st.spinner("Downloading NSE + BSE instruments..."):
+                st.session_state.instruments=load_all_instruments()
+        if st.session_state.instruments.empty: st.error("Instrument Database ڈاؤن لوڈ نہیں ہو سکا۔")
+        elif refresh_market_data(): st.rerun()
+    scanner=st.session_state.scanner_data
+    ready=scanner is not None and not scanner.empty
+    if ready:
+        st.markdown(kpi_html(scanner),unsafe_allow_html=True)
     else:
-        total=len(scanner); live=int(scanner["LTP"].notna().sum()); vols=int(scanner["Volume"].notna().sum())
-        a,b,c,d=st.columns(4)
-        a.metric("👥 Total Companies",f"{total:,}")
-        b.metric("📈 Live Prices",f"{live:,}")
-        c.metric("▰ Volume Available",f"{vols:,}")
-        d.metric("🏦 Exchanges","NSE + BSE")
-        st.write("")
-        left,right=st.columns([1.8,1])
-        with left:
-            st.markdown('<div class="sa-title">📈 MARKET OVERVIEW — NIFTY 50</div>',unsafe_allow_html=True)
-            nq=fetch_quote_batch([NIFTY_KEY]); nq=next(iter(nq.values()),{}) if nq else {}
-            if nq.get("last_price") is not None:
-                lp=float(nq["last_price"]); ch=float(nq.get("net_change") or 0)
-                prev=lp-ch; pct=ch/prev*100 if prev else 0
-                st.success(f"NIFTY 50  {lp:,.2f}  {'▲' if ch>=0 else '▼'} {pct:+.2f}%")
-            nh=cached_nifty()
-            if not nh.empty: st.line_chart(nh.set_index("Date")[["Close"]],height=330)
-            elif not nq: st.warning("NIFTY 50 feed فی الحال دستیاب نہیں۔")
-        with right:
-            st.markdown('<div class="sa-title">🌐 MARKET SNAPSHOT</div>',unsafe_allow_html=True)
-            valid=scanner.dropna(subset=["LTP"]).copy()
-            chg=pd.to_numeric(valid["Net Change"],errors="coerce").fillna(0)
-            vol=pd.to_numeric(valid["Volume"],errors="coerce").fillna(0)
-            avg=pd.to_numeric(valid["Average Price"],errors="coerce").fillna(pd.to_numeric(valid["LTP"],errors="coerce"))
-            traded=float((avg*vol).sum()/1e7)
-            st.markdown(f'<div class="sa-panel"><div class="sa-snapshot-row">🟢 Advances <b style="color:#27ee79">{int((chg>0).sum()):,}</b></div><div class="sa-snapshot-row">🔻 Declines <b style="color:#ff5353">{int((chg<0).sum()):,}</b></div><div class="sa-snapshot-row">➖ Unchanged <b style="color:#ffca43">{int((chg==0).sum()):,}</b></div><div class="sa-snapshot-row">💹 Est. Traded Value <b>₹ {traded:,.2f} Cr</b></div></div>',unsafe_allow_html=True)
-            st.caption("Estimated value = average price × reported volume; not official exchange turnover.")
-        st.markdown('<div class="sa-title">🏆 TOP VOLUME STOCKS</div>',unsafe_allow_html=True)
-        top=scanner.dropna(subset=["Volume"]).sort_values("Volume",ascending=False).head(10)
-        if top.empty: st.warning("Volume data ابھی دستیاب نہیں۔")
-        else:
-            show=top[["Symbol","Company","Exchange","LTP","Net Change","Volume"]].copy()
-            show.insert(0,"#",range(1,len(show)+1))
-            show=show.rename(columns={"LTP":"LTP (₹)","Net Change":"Change (₹)"})
-            st.dataframe(show,use_container_width=True,hide_index=True,height=390)
+        st.info("Live data دیکھنے کے لیے اوپر والا بٹن دبائیں۔")
+    nq=fetch_quote_batch([NIFTY_KEY]); nq=next(iter(nq.values()),{}) if nq else {}
+    overview=nifty_panel_html(nq,cached_nifty())
+    if ready:
+        st.markdown(f'<div class="sa-grid">{overview}{snapshot_html(scanner)}</div>',unsafe_allow_html=True)
+        st.markdown(top_volume_html(scanner),unsafe_allow_html=True)
+        st.caption("Last refresh: "+str(st.session_state.last_refresh))
         st.download_button("⬇️ Download Dashboard CSV",scanner.to_csv(index=False).encode(), "shafiq_alpha_dashboard.csv","text/csv")
+    else:
+        st.markdown(overview,unsafe_allow_html=True)
 
 elif page=="Market Scanner":
     st.markdown('<div class="sa-title">🔎 NSE + BSE MARKET SCANNER</div>',unsafe_allow_html=True)
