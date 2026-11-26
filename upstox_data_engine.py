@@ -81,8 +81,8 @@ div[data-testid="stRadio"] label:has(input:checked){background:linear-gradient(1
 div[data-testid="stRadio"] label p{color:#eaf3ff!important;font-weight:700} div[data-testid="stRadio"] label:has(input:checked) p{color:#101827!important;font-weight:900}
 @media(max-width:700px){
  .block-container{padding-left:.65rem;padding-right:.65rem}
- .sa-hero{gap:15px;padding:15px 12px;border-radius:15px}
- .sa-avatar{width:150px;height:150px;flex-basis:150px}
+ .sa-hero{gap:12px;padding:15px 10px;border-radius:15px;min-height:230px}
+ .sa-avatar{width:190px;height:190px;flex-basis:190px}
  .sa-brand-title{font-size:1.75rem;letter-spacing:0}
  .sa-subtitle{font-size:.65rem;letter-spacing:0}
  .sa-credit{font-size:.72rem}
@@ -150,7 +150,7 @@ def load_all_instruments():
         try:
             d=download_instruments(ex)
             if "instrument_type" in d: d=d[d.instrument_type.astype(str).str.upper()=="EQ"]
-            if "isin" in d: d=d[d.isin.notna() & (d.isin.astype(str).str.len()>5)]
+            if "isin" in d: d=d[d["isin"].notna() & (d["isin"].astype(str).str.len()>5)]
             if "instrument_key" in d: d=d.drop_duplicates("instrument_key")
             d["Exchange"]=ex; frames.append(d)
         except Exception as e: st.warning(f"{ex} instrument download error: {e}")
